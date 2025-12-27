@@ -163,9 +163,7 @@ const Login: React.FC = () => {
             <button type="submit" className="login-btn" disabled={loading}>
               {loading ? 'Bağlanıyor...' : 'Giriş Yap'}
             </button>
-            <button type="button" className="secondary-btn" onClick={() => setIsRegisterModalOpen(true)}>
-              Kayıt Ol
-            </button>
+            
           </div>
         </form>
 
