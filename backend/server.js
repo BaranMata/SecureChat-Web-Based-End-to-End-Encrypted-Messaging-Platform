@@ -146,8 +146,17 @@ const swaggerOptions = {
 const swaggerSpec = swaggerJsdoc(swaggerOptions);
 
 // --- MIDDLEWARES ---
-app.use(helmet());
-app.use(cors({ origin: "http://localhost:5173" })); 
+app.use(helmet({
+  contentSecurityPolicy: false, // Geliştirme aşamasında şifreleme ispatlarını görmeni sağlar
+}));
+
+// CORS ayarını tüm localhost isteklerine izin verecek şekilde esnetiyoruz
+app.use(cors({
+  origin: ["http://localhost:5173", "http://localhost:3000"],
+  methods: ["GET", "POST"],
+  credentials: true
+}));
+
 app.use(express.json());
 
 // --- SWAGGER UI ---
@@ -168,8 +177,51 @@ app.get('/api/users', async (req, res) => {
         res.json(users.rows);
     } catch (e) { res.status(500).json({error: "Hata"}); }
 });
+// API ROTALARI kısmına ekle
+app.post('/api/messages', async (req, res) => {
+    try {
+        const { receiver_id, cipher_text, iv } = req.body;
+        // Not: sender_id normalde JWT'den alınır ama test için şimdilik manuel 1 yapabilirsin
+        const sender_id = 1; 
 
+        await pool.query(
+            "INSERT INTO messages (sender_id, receiver_id, cipher_text, iv) VALUES ($1, $2, $3, $4)",
+            [sender_id, receiver_id, cipher_text, iv]
+        );
+        res.status(201).json({ message: "Mesaj şifreli olarak kaydedildi" });
+    } catch (e) {
+        console.error(e);
+        res.status(500).json({ error: "Mesaj kaydedilemedi" });
+    }
+});
+// --- server.js içinde 'API ROTALARI' kısmına ekleyin ---
 
+/**
+ * @summary Yeni şifreli mesaj kaydet
+ */
+app.post('/api/messages', async (req, res) => {
+    try {
+        const { receiver_id, cipher_text, iv } = req.body;
+        
+        // Normalde sender_id JWT token'dan alınır. 
+        // Test aşamasında olduğunuz için şimdilik manuel 1 veya 
+        // veritabanındaki geçerli bir kullanıcı ID'sini kullanabilirsin.
+        const sender_id = 1; 
+
+        const result = await pool.query(
+            "INSERT INTO messages (sender_id, receiver_id, cipher_text, iv) VALUES ($1, $2, $3, $4) RETURNING *",
+            [sender_id, receiver_id, cipher_text, iv]
+        );
+
+        res.status(201).json({
+            message: "✅ Mesaj şifreli olarak veritabanına kaydedildi.",
+            data: result.rows[0]
+        });
+    } catch (error) {
+        console.error("Mesaj Kaydetme Hatası:", error);
+        res.status(500).json({ error: "Mesaj veritabanına yazılamadı." });
+    }
+});
 // --- SOCKET.IO ---
 const io = new Server(server, {
   cors: {
