@@ -17,8 +17,21 @@ const chatController = require('./controllers/chatController');
 const app = express();
 const server = http.createServer(app);
 
-// --- SWAGGER AYARLARI (Manuel ve Kesin Tanımlama) ---
-// Harici dosya kullanmıyoruz, her şey burada tanımlı.
+// --- MIDDLEWARES ---
+app.use(helmet({
+  contentSecurityPolicy: false, 
+}));
+
+// CORS Ayarları
+app.use(cors({
+  origin: ["http://localhost:5173", "http://localhost:3000"],
+  methods: ["GET", "POST"],
+  credentials: true
+}));
+
+app.use(express.json());
+
+// --- SWAGGER AYARLARI ---
 const swaggerDefinition = {
   openapi: '3.0.0',
   info: {
@@ -27,10 +40,7 @@ const swaggerDefinition = {
     description: 'SecureChat API Dokümantasyonu (UUID Destekli)',
   },
   servers: [
-    {
-      url: 'http://localhost:3000',
-      description: 'Local Sunucu',
-    },
+    { url: 'http://localhost:3000', description: 'Local Sunucu' },
   ],
   components: {
     securitySchemes: {
@@ -41,7 +51,6 @@ const swaggerDefinition = {
       },
     },
   },
-  // Rotaları burada Elle ve /api ön ekiyle tanımlıyoruz
   paths: {
     '/api/auth/register': {
       post: {
@@ -55,12 +64,12 @@ const swaggerDefinition = {
                 type: 'object',
                 required: ['username', 'password', 'publicKey'],
                 properties: {
-                  username: { type: 'string', example: 'oguzhan' },
+                  username: { type: 'string', example: 'kullanici1' },
                   password: { type: 'string', example: '123456' },
                   publicKey: { type: 'string', description: 'Base64 Public Key' },
                   email: { type: 'string', example: 'test@mail.com' },
-                  firstName: { type: 'string', example: 'Oguzhan' },
-                  lastName: { type: 'string', example: 'Atak' },
+                  firstName: { type: 'string', example: 'Ad' },
+                  lastName: { type: 'string', example: 'Soyad' },
                 },
               },
             },
@@ -83,7 +92,7 @@ const swaggerDefinition = {
               schema: {
                 type: 'object',
                 properties: {
-                  username: { type: 'string', example: 'oguzhan' },
+                  username: { type: 'string', example: 'kullanici1' },
                   password: { type: 'string', example: '123456' },
                 },
               },
@@ -101,16 +110,9 @@ const swaggerDefinition = {
         summary: 'Kullanıcı Public Key getir',
         tags: ['Security'],
         parameters: [
-          {
-            in: 'path',
-            name: 'userId',
-            required: true,
-            schema: { type: 'string', format: 'uuid' }, // UUID OLARAK GÜNCELLENDİ
-          },
+          { in: 'path', name: 'userId', required: true, schema: { type: 'string', format: 'uuid' } },
         ],
-        responses: {
-          200: { description: 'Key döndü' },
-        },
+        responses: { 200: { description: 'Key döndü' } },
       },
     },
     '/api/messages/{userId}/{friendId}': {
@@ -118,21 +120,17 @@ const swaggerDefinition = {
         summary: 'Mesaj geçmişini getir',
         tags: ['Chat'],
         parameters: [
-          { in: 'path', name: 'userId', required: true, schema: { type: 'string', format: 'uuid' } }, // UUID
-          { in: 'path', name: 'friendId', required: true, schema: { type: 'string', format: 'uuid' } }, // UUID
+          { in: 'path', name: 'userId', required: true, schema: { type: 'string', format: 'uuid' } },
+          { in: 'path', name: 'friendId', required: true, schema: { type: 'string', format: 'uuid' } },
         ],
-        responses: {
-          200: { description: 'Mesajlar listelendi' },
-        },
+        responses: { 200: { description: 'Mesajlar listelendi' } },
       },
     },
     '/api/users': {
       get: {
         summary: 'Tüm kullanıcıları listele',
         tags: ['Users'],
-        responses: {
-          200: { description: 'Kullanıcı listesi' },
-        },
+        responses: { 200: { description: 'Kullanıcı listesi' } },
       },
     },
   },
@@ -140,72 +138,42 @@ const swaggerDefinition = {
 
 const swaggerOptions = {
   definition: swaggerDefinition,
-  apis: [], // Dosyadan okumayı kapattık, yukarıdaki 'paths' geçerli
+  apis: [], 
 };
 
 const swaggerSpec = swaggerJsdoc(swaggerOptions);
-
-// --- MIDDLEWARES ---
-app.use(helmet({
-  contentSecurityPolicy: false, // Geliştirme aşamasında şifreleme ispatlarını görmeni sağlar
-}));
-
-// CORS ayarını tüm localhost isteklerine izin verecek şekilde esnetiyoruz
-app.use(cors({
-  origin: ["http://localhost:5173", "http://localhost:3000"],
-  methods: ["GET", "POST"],
-  credentials: true
-}));
-
-app.use(express.json());
-
-// --- SWAGGER UI ---
 app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec));
 
 
-// --- API ROTALARI (Burası Express'in dinlediği yer) ---
-// Dikkat: Swagger'daki adreslerle burası birebir aynı olmalı (/api/...)
+// --- API ROTALARI ---
+
+// 1. Auth Rotaları
 app.post('/api/auth/register', authController.register);
 app.post('/api/auth/login', authController.login);
 app.get('/api/users/:userId/public-key', authController.getPublicKey);
+
+// 2. Chat Rotaları (Geçmiş Mesajlar)
 app.get('/api/messages/:userId/:friendId', chatController.getHistory);
 
+// 3. Kullanıcı Listesi Rotası
 app.get('/api/users', async (req, res) => {
     try {
-        // Frontend için gerekli alanları çekiyoruz
         const users = await pool.query("SELECT id, username, email, first_name, last_name, public_key, is_online FROM users");
         res.json(users.rows);
-    } catch (e) { res.status(500).json({error: "Hata"}); }
-});
-// API ROTALARI kısmına ekle
-app.post('/api/messages', async (req, res) => {
-    try {
-        const { receiver_id, cipher_text, iv } = req.body;
-        // Not: sender_id normalde JWT'den alınır ama test için şimdilik manuel 1 yapabilirsin
-        const sender_id = 1; 
-
-        await pool.query(
-            "INSERT INTO messages (sender_id, receiver_id, cipher_text, iv) VALUES ($1, $2, $3, $4)",
-            [sender_id, receiver_id, cipher_text, iv]
-        );
-        res.status(201).json({ message: "Mesaj şifreli olarak kaydedildi" });
-    } catch (e) {
+    } catch (e) { 
         console.error(e);
-        res.status(500).json({ error: "Mesaj kaydedilemedi" });
+        res.status(500).json({error: "Kullanıcılar getirilemedi"}); 
     }
 });
-// --- server.js içinde 'API ROTALARI' kısmına ekleyin ---
 
-/**
- * @summary Yeni şifreli mesaj kaydet
- */
+// 4. Mesaj Kaydetme Rotası (POST)
+// Not: Socket.io zaten canlı mesajı iletiyor, bu endpoint HTTP üzerinden mesaj atmak veya yedeklemek için.
 app.post('/api/messages', async (req, res) => {
     try {
         const { receiver_id, cipher_text, iv } = req.body;
         
-        // Normalde sender_id JWT token'dan alınır. 
-        // Test aşamasında olduğunuz için şimdilik manuel 1 veya 
-        // veritabanındaki geçerli bir kullanıcı ID'sini kullanabilirsin.
+        // TODO: Login sistemi tam oturunca burayı 'req.user.id' ile değiştir.
+        // Şimdilik test için manuel ID: 1
         const sender_id = 1; 
 
         const result = await pool.query(
@@ -222,7 +190,9 @@ app.post('/api/messages', async (req, res) => {
         res.status(500).json({ error: "Mesaj veritabanına yazılamadı." });
     }
 });
-// --- SOCKET.IO ---
+
+
+// --- SOCKET.IO AYARLARI ---
 const io = new Server(server, {
   cors: {
     origin: "http://localhost:5173",
@@ -230,32 +200,36 @@ const io = new Server(server, {
   }
 });
 
+// Hangi userId'nin hangi socketId'ye sahip olduğunu tutar
 const onlineUsers = new Map();
 
 io.on('connection', (socket) => {
   console.log('🔌 Yeni Socket Bağlantısı:', socket.id);
 
+  // Kullanıcı giriş yapınca
   socket.on('register_user', async (userId) => {
     onlineUsers.set(userId, socket.id);
-    // Online durumunu güncelle
+    
     try {
         await pool.query("UPDATE users SET is_online = true WHERE id = $1", [userId]);
         console.log(`✅ Kullanıcı ${userId} online oldu.`);
         io.emit('user_status', { userId, status: 'online' });
-    } catch (e) { console.error(e); }
+    } catch (e) { console.error("Online update hatası:", e); }
   });
 
+  // Mesaj Gönderimi
   socket.on('send_message', async (data) => {
     const { senderId, receiverId, cipherText, iv } = data;
     
-    // DB'ye kaydet
+    // 1. Veritabanına Kaydet
     try {
       await pool.query(
         "INSERT INTO messages (sender_id, receiver_id, cipher_text, iv) VALUES ($1, $2, $3, $4)",
         [senderId, receiverId, cipherText, iv]
       );
-    } catch (e) { console.error("DB Hatası:", e); }
+    } catch (e) { console.error("DB Mesaj Kayıt Hatası:", e); }
 
+    // 2. Canlı Olarak İlet (Eğer kullanıcı online ise)
     const receiverSocketId = onlineUsers.get(receiverId);
     if (receiverSocketId) {
       io.to(receiverSocketId).emit('receive_message', {
@@ -267,8 +241,26 @@ io.on('connection', (socket) => {
     }
   });
 
-  socket.on('disconnect', () => {
-    console.log('Kullanıcı ayrıldı.');
+  // Kullanıcı Ayrılınca (Disconnect)
+  socket.on('disconnect', async () => {
+    console.log('❌ Kullanıcı ayrıldı:', socket.id);
+    
+    // Socket ID'den User ID'yi bul ve offline yap
+    let disconnectedUserId = null;
+    for (const [userId, socketId] of onlineUsers.entries()) {
+      if (socketId === socket.id) {
+        disconnectedUserId = userId;
+        break;
+      }
+    }
+
+    if (disconnectedUserId) {
+      onlineUsers.delete(disconnectedUserId);
+      try {
+        await pool.query("UPDATE users SET is_online = false WHERE id = $1", [disconnectedUserId]);
+        io.emit('user_status', { userId: disconnectedUserId, status: 'offline' });
+      } catch (e) { console.error("Offline update hatası:", e); }
+    }
   });
 });
 

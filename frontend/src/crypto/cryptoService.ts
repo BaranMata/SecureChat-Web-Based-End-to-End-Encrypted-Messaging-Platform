@@ -1,5 +1,25 @@
 // src/crypto/cryptoService.ts
 
+// --- YARDIMCI FONKSİYONLAR (Base64 <-> ArrayBuffer) ---
+function arrayBufferToBase64(buffer: ArrayBuffer): string {
+  let binary = "";
+  const bytes = new Uint8Array(buffer);
+  for (let i = 0; i < bytes.byteLength; i++) {
+    binary += String.fromCharCode(bytes[i]);
+  }
+  return window.btoa(binary);
+}
+
+function base64ToArrayBuffer(base64: string): ArrayBuffer {
+  const binary_string = window.atob(base64);
+  const len = binary_string.length;
+  const bytes = new Uint8Array(len);
+  for (let i = 0; i < len; i++) {
+    bytes[i] = binary_string.charCodeAt(i);
+  }
+  return bytes.buffer;
+}
+
 // 1) ANAHTAR ÇİFTİ OLUŞTURMA (ECDH)
 export const generateKeyPair = async (): Promise<CryptoKeyPair> => {
   return await window.crypto.subtle.generateKey(
@@ -9,16 +29,26 @@ export const generateKeyPair = async (): Promise<CryptoKeyPair> => {
   );
 };
 
-// 2) ECDH ANAHTARINI DIŞARI AKTARMA (Public/Private -> Base64 String)
-// Bu fonksiyonu anahtarını sunucuya gönderirken kullanacaksın.
+// 2) ANAHTARLARI DIŞARI AKTARMA (Export)
+// Ana fonksiyon (Generic)
 export const exportEcdhKey = async (key: CryptoKey): Promise<string> => {
   const format = key.type === "public" ? "spki" : "pkcs8";
   const exported = await window.crypto.subtle.exportKey(format, key);
   return arrayBufferToBase64(exported);
 };
 
-// 3) ECDH ANAHTARINI İÇERİ ALMA (Base64 String -> Key Object)
-// Arkadaşının public key'ini sunucudan aldığında bu fonksiyonla çevireceksin.
+// Login.tsx için özel sarmalayıcılar (Wrapper)
+export const exportPublicKey = async (key: CryptoKey): Promise<string> => {
+  return exportEcdhKey(key);
+};
+
+export const exportPrivateKey = async (key: CryptoKey): Promise<string> => {
+  return exportEcdhKey(key);
+};
+
+
+// 3) ANAHTARLARI İÇERİ ALMA (Import)
+// Ana fonksiyon (Generic)
 export const importEcdhKey = async (
   keyDataBase64: string,
   type: "public" | "private"
@@ -35,8 +65,17 @@ export const importEcdhKey = async (
   );
 };
 
+// Chat.tsx için özel sarmalayıcılar (Wrapper) - EKSİK OLAN KISIM BURASIYDI
+export const importPublicKey = async (keyBase64: string): Promise<CryptoKey> => {
+  return importEcdhKey(keyBase64, "public");
+};
+
+export const importPrivateKey = async (keyBase64: string): Promise<CryptoKey> => {
+  return importEcdhKey(keyBase64, "private");
+};
+
+
 // 4) ORTAK SIR TÜRETME (Shared Secret - AES Key)
-// Senin Private Key'in + Arkadaşının Public Key'i = Ortak Şifre
 export const deriveSharedKey = async (
   privateKey: CryptoKey,
   publicKey: CryptoKey
@@ -50,14 +89,12 @@ export const deriveSharedKey = async (
   );
 };
 
-// ✅ 5) AES (SECRET) KEY EXPORT (CryptoKey -> JWK object)
-// Bunu sessionStorage'a kaydetmek için kullanıyoruz.
+// 5) AES KEY EXPORT (SessionStorage için)
 export const exportAesKey = async (key: CryptoKey): Promise<JsonWebKey> => {
   return await window.crypto.subtle.exportKey("jwk", key);
 };
 
-// ✅ 6) AES (SECRET) KEY IMPORT (JWK object -> CryptoKey)
-// Chat sayfasına geçtiğinde sessionStorage'dan okuyup tekrar anahtara çevirmek için.
+// 6) AES KEY IMPORT (SessionStorage'dan geri alma)
 export const importAesKey = async (jwk: JsonWebKey): Promise<CryptoKey> => {
   return await window.crypto.subtle.importKey(
     "jwk",
@@ -74,8 +111,7 @@ export const encryptMessage = async (
   key: CryptoKey
 ): Promise<{ cipherText: string; iv: string }> => {
   const encodedText = new TextEncoder().encode(text);
-
-  // IV: Her şifrelemede rastgele olmalı (Güvenlik için şart)
+  // IV: 12 byte random değer (Her mesajda benzersiz olmalı)
   const iv = window.crypto.getRandomValues(new Uint8Array(12));
 
   const encryptedBuffer = await window.crypto.subtle.encrypt(
@@ -96,10 +132,10 @@ export const decryptMessage = async (
   iv: string,
   key: CryptoKey
 ): Promise<string> => {
-  const encryptedBuffer = base64ToArrayBuffer(cipherText);
-  const ivBuffer = base64ToArrayBuffer(iv);
-
   try {
+    const encryptedBuffer = base64ToArrayBuffer(cipherText);
+    const ivBuffer = base64ToArrayBuffer(iv);
+
     const decryptedBuffer = await window.crypto.subtle.decrypt(
       { name: "AES-GCM", iv: new Uint8Array(ivBuffer) },
       key,
@@ -107,27 +143,8 @@ export const decryptMessage = async (
     );
     return new TextDecoder().decode(decryptedBuffer);
   } catch (e) {
-    console.error("Şifre çözülemedi (Anahtar yanlış olabilir):", e);
-    return "⚠️ Şifre Çözülemedi";
+    console.error("Şifre çözülemedi:", e);
+    // Hata fırlat ki Chat.tsx yakalasın
+    throw new Error("Decryption Failed");
   }
 };
-
-// --- YARDIMCILAR ---
-function arrayBufferToBase64(buffer: ArrayBuffer): string {
-  let binary = "";
-  const bytes = new Uint8Array(buffer);
-  for (let i = 0; i < bytes.byteLength; i++) {
-    binary += String.fromCharCode(bytes[i]);
-  }
-  return window.btoa(binary);
-}
-
-function base64ToArrayBuffer(base64: string): ArrayBuffer {
-  const binary_string = window.atob(base64);
-  const len = binary_string.length;
-  const bytes = new Uint8Array(len);
-  for (let i = 0; i < len; i++) {
-    bytes[i] = binary_string.charCodeAt(i);
-  }
-  return bytes.buffer;
-}

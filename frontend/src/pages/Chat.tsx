@@ -1,239 +1,313 @@
-import React, { useState, useEffect, useRef } from 'react';
-import type { Message, User } from '../types';
-import Modal from '../components/Modal';
-
-// ✅ Crypto Servis Fonksiyonları
+import { useState, useEffect, useRef } from 'react';
+import { useNavigate } from 'react-router-dom';
+import { io, Socket } from 'socket.io-client';
+import Modal from '../components/Modal'; 
 import { 
-  importAesKey, 
+  importPrivateKey, 
+  importPublicKey, 
+  deriveSharedKey, 
   encryptMessage, 
-  decryptMessage, 
-  generateKeyPair, 
-  exportEcdhKey 
+  decryptMessage 
 } from '../crypto/cryptoService';
 
-const MOCK_DB: Record<string, Message[]> = {
-  "1": [
-    { id: "init-1", sender: 'Gokce_Naz', text: 'Hey!', timestamp: '10:00', isOwn: false },
-    { id: "init-2", sender: 'Ben', text: 'Hey!', timestamp: '10:01', isOwn: true },
-  ],
-  "2": [
-    { id: "init-3", sender: 'Basak_Su', text: 'Merhaba!', timestamp: '10:02', isOwn: false },
-  ],
-};
+// Backend URL
+const SERVER_URL = 'http://localhost:3000';
+
+interface User {
+  id: string;
+  username: string;
+  is_online: boolean;
+  public_key: string;
+}
+
+interface Message {
+  id?: number;
+  sender_id: string;
+  receiver_id?: string;
+  text: string;
+  cipher_text?: string;
+  iv?: string;
+  timestamp?: string;
+  isMe: boolean;
+}
 
 const Chat: React.FC = () => {
-  const [input, setInput] = useState('');
-  const [sharedKey, setSharedKey] = useState<CryptoKey | null>(null);
-  const [lastEncrypted, setLastEncrypted] = useState<{ cipherText: string; iv: string } | null>(null);
+  const navigate = useNavigate();
+  const socketRef = useRef<Socket | null>(null);
+  const bottomRef = useRef<HTMLDivElement>(null);
 
-  const [users, setUsers] = useState<User[]>([
-    { id: "1", username: 'Gokce_Naz', isOnline: true },
-    { id: "2", username: 'Basak_Su', isOnline: false },
-    { id: "3", username: 'Oguzhan', isOnline: true },
-  ]);
-
-  const [selectedUser, setSelectedUser] = useState<User>(users[0]);
+  // --- STATE ---
+  const [users, setUsers] = useState<User[]>([]);
+  const [selectedUser, setSelectedUser] = useState<User | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
-  const messagesEndRef = useRef<HTMLDivElement>(null);
+  const [inputText, setInputText] = useState("");
+  const [currentSharedKey, setCurrentSharedKey] = useState<CryptoKey | null>(null);
 
-  const [isAddUserOpen, setIsAddUserOpen] = useState(false);
-  const [newUsername, setNewUsername] = useState('');
+  // Debug / İspat İçin State'ler
   const [isDebugOpen, setIsDebugOpen] = useState(false);
-  const [debugDecryptedText, setDebugDecryptedText] = useState<string>('');
+  const [lastEncryptedData, setLastEncryptedData] = useState<{cipher: string, iv: string} | null>(null);
+  const [debugDecryptedText, setDebugDecryptedText] = useState("");
+  
+  // Kendi bilgilerimiz
+  const myUserId = localStorage.getItem('user_id');
+  const myUsername = localStorage.getItem('username');
 
-  // ✅ Güvenlik Başlatma: Sayfa açıldığında anahtarı yükle
+  // --- 1. BAŞLANGIÇ: Socket Bağlantısı ---
   useEffect(() => {
-    const initializeSecurity = async () => {
-      const stored = sessionStorage.getItem("securechat_shared_aes");
-      if (!stored) {
-        console.warn("⚠️ AES key yok. Test için anahtar üretiliyor...");
-        const pair = await generateKeyPair();
-        const pub = await exportEcdhKey(pair.publicKey);
-        console.log("🔑 [GÜVENLİK] Test Public Key:", pub);
-        return;
-      }
-      try {
-        const jwk = JSON.parse(stored);
-        const key = await importAesKey(jwk);
-        setSharedKey(key);
-        console.log("✅ [GÜVENLİK] Shared AES Key aktif.");
-      } catch (err) {
-        console.error("❌ Key import hatası:", err);
-      }
+    if (!localStorage.getItem('token')) {
+      navigate('/');
+      return;
+    }
+
+    socketRef.current = io(SERVER_URL);
+    socketRef.current.emit('register_user', myUserId);
+    fetchUsers();
+
+    socketRef.current.on('user_status', (data) => {
+      setUsers(prev => prev.map(u => 
+        u.id === data.userId ? { ...u, is_online: data.status === 'online' } : u
+      ));
+    });
+
+    socketRef.current.on('receive_message', async (data) => {
+      setMessages(prev => [...prev, {
+        sender_id: data.senderId,
+        text: "🔒 Şifre Çözülüyor...",
+        cipher_text: data.cipherText,
+        iv: data.iv,
+        isMe: false
+      }]);
+    });
+
+    return () => {
+      socketRef.current?.disconnect();
     };
-    initializeSecurity();
   }, []);
 
+  // --- 2. KULLANICI SEÇME VE ANAHTAR TÜRETME ---
   useEffect(() => {
-    const userMessages = MOCK_DB[selectedUser.id] || [];
-    setMessages([...userMessages]);
+    if (!selectedUser || !myUserId) return;
+
+    const prepareChat = async () => {
+      setMessages([]);
+      try {
+        console.log(`🔐 ${selectedUser.username} ile anahtar anlaşması yapılıyor...`);
+        
+        const myPrivateKeyBase64 = localStorage.getItem('private_key');
+        if (!myPrivateKeyBase64) throw new Error("Private Key yok!");
+        
+        const myPrivateKey = await importPrivateKey(myPrivateKeyBase64);
+        const friendPublicKey = await importPublicKey(selectedUser.public_key);
+        const sharedKey = await deriveSharedKey(myPrivateKey, friendPublicKey);
+        
+        setCurrentSharedKey(sharedKey);
+        fetchHistory(selectedUser.id, sharedKey);
+
+      } catch (error) {
+        console.error("Anahtar hatası:", error);
+      }
+    };
+    prepareChat();
   }, [selectedUser]);
 
-  useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages]);
-
-  // ✅ KRİTİK FONKSİYON: Şifreleme ve Backend'e Gönderim
-  const handleSend = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!input.trim()) return;
-
-    let cipherText: string | undefined;
-    let iv: string | undefined;
-
-    // 1. Şifreleme (Client-side)
-    if (sharedKey) {
-      try {
-        const encrypted = await encryptMessage(input, sharedKey);
-        cipherText = encrypted.cipherText;
-        iv = encrypted.iv;
-        setLastEncrypted({ cipherText, iv });
-
-        console.log("🔒 [GÜVENLİK] Mesaj Şifrelendi!");
-        console.log("📡 Gönderilecek Şifreli Veri:", cipherText);
-      } catch (err) {
-        console.error("❌ Şifreleme hatası:", err);
-        return;
-      }
-    }
-
-    // 2. Backend API İsteği (Veritabanına Kaydetme)
+  // --- 3. GEÇMİŞ MESAJLARI ÇEK ---
+  const fetchHistory = async (friendId: string, sharedKey: CryptoKey) => {
     try {
-      // Chat.tsx içinde 5000 olan yeri 3000 yap
-const response = await fetch('http://localhost:3000/api/messages', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${sessionStorage.getItem('token')}`
-        },
-        body: JSON.stringify({
-          receiver_id: selectedUser.id,
-          cipher_text: cipherText,
-          iv: iv
-        })
-      });
+      const res = await fetch(`${SERVER_URL}/api/messages/${myUserId}/${friendId}`);
+      const data = await res.json();
+      
+      const decryptedMessages = await Promise.all(data.map(async (msg: any) => {
+        try {
+          const decryptedText = await decryptMessage(msg.cipher_text, msg.iv, sharedKey);
+          return { ...msg, text: decryptedText, isMe: msg.sender_id === myUserId };
+        } catch (e) {
+          return { ...msg, text: "⚠️ Mesaj çözülemedi", isMe: msg.sender_id === myUserId };
+        }
+      }));
 
-      if (response.ok) {
-        console.log("🚀 Şifreli mesaj veritabanına (PostgreSQL) başarıyla kaydedildi!");
-      }
-    } catch (error) {
-      console.error("❌ Mesaj gönderilirken ağ hatası:", error);
-    }
-
-    // 3. UI Güncelleme (Yerel görünüm)
-    const newMessage: Message = {
-      id: window.crypto.randomUUID(),
-      sender: 'Ben',
-      text: input, // Kendi ekranında düz metin görüyorsun
-      cipherText,
-      iv,
-      timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-      isOwn: true
-    };
-
-    setMessages(prev => [...prev, newMessage]);
-    if (!MOCK_DB[selectedUser.id]) MOCK_DB[selectedUser.id] = [];
-    MOCK_DB[selectedUser.id].push(newMessage);
-    setInput('');
+      setMessages(decryptedMessages);
+      scrollToBottom();
+    } catch (error) { console.error("Geçmiş hatası", error); }
   };
 
-  const handleDebugDecrypt = async () => {
-    if (!sharedKey || !lastEncrypted) return;
+  // --- 4. GELEN MESAJI ANLIK ÇÖZME ---
+  useEffect(() => {
+    const decryptLastMessage = async () => {
+      if (messages.length === 0 || !currentSharedKey) return;
+      const lastMsg = messages[messages.length - 1];
+      
+      if (lastMsg.text === "🔒 Şifre Çözülüyor..." && lastMsg.cipher_text && lastMsg.iv) {
+        try {
+          const plainText = await decryptMessage(lastMsg.cipher_text, lastMsg.iv, currentSharedKey);
+          setMessages(prev => prev.map((m, i) => i === prev.length - 1 ? { ...m, text: plainText } : m));
+          scrollToBottom();
+        } catch (e) { console.error("Decrypt hatası"); }
+      }
+    };
+    decryptLastMessage();
+  }, [messages, currentSharedKey]);
+
+  // --- 5. MESAJ GÖNDERME ---
+  const handleSendMessage = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!inputText.trim() || !selectedUser || !currentSharedKey || !socketRef.current) return;
+
     try {
-      const plain = await decryptMessage(lastEncrypted.cipherText, lastEncrypted.iv, sharedKey);
+      const { cipherText, iv } = await encryptMessage(inputText, currentSharedKey);
+      
+      setLastEncryptedData({ cipher: cipherText, iv: iv });
+      setDebugDecryptedText("");
+
+      socketRef.current.emit('send_message', {
+        senderId: myUserId,
+        receiverId: selectedUser.id,
+        cipherText,
+        iv
+      });
+
+      setMessages(prev => [...prev, {
+        sender_id: myUserId!,
+        text: inputText,
+        isMe: true
+      }]);
+
+      setInputText("");
+      scrollToBottom();
+
+    } catch (error) { console.error("Gönderme hatası:", error); }
+  };
+
+  // --- DEBUG DECRYPT ---
+  const handleDebugDecrypt = async () => {
+    if (!lastEncryptedData || !currentSharedKey) return;
+    try {
+      const plain = await decryptMessage(lastEncryptedData.cipher, lastEncryptedData.iv, currentSharedKey);
       setDebugDecryptedText(plain);
     } catch (e) {
       setDebugDecryptedText("⚠️ Hata: Çözülemedi.");
     }
   };
 
-  const handleAddUserSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!newUsername.trim()) return;
-    const newId = window.crypto.randomUUID();
-    const newUser: User = { id: newId, username: newUsername, isOnline: false };
-    setUsers(prev => [...prev, newUser]);
-    MOCK_DB[newId] = [];
-    setSelectedUser(newUser);
-    setNewUsername('');
-    setIsAddUserOpen(false);
+  const fetchUsers = async () => {
+    try {
+      const res = await fetch(`${SERVER_URL}/api/users`);
+      const data = await res.json();
+      setUsers(data.filter((u: User) => u.id !== myUserId));
+    } catch (error) { console.error("User fetch hatası"); }
+  };
+
+  const scrollToBottom = () => {
+    setTimeout(() => bottomRef.current?.scrollIntoView({ behavior: "smooth" }), 100);
+  };
+
+  const handleLogout = () => {
+    localStorage.clear();
+    socketRef.current?.disconnect();
+    navigate('/');
   };
 
   return (
     <div className="chat-container">
-      {/* SIDEBAR */}
+      {/* SIDEBAR - YENİ TASARIM */}
       <div className="sidebar">
+        
+        {/* Başlık ve Profil Kartı */}
         <div className="sidebar-header">
-          <h3>Kişiler</h3>
-          <div style={{ display: 'flex', gap: 8 }}>
-            <button className="add-user-btn" onClick={() => setIsDebugOpen(true)}>🛠</button>
-            <button className="add-user-btn" onClick={() => setIsAddUserOpen(true)}>+</button>
+          <div className="app-brand">
+            <h3>SecureChat</h3>
+            <span className="lock-icon">🔒</span>
+          </div>
+          
+          <div className="user-profile-card">
+            <div className="user-avatar">
+              {myUsername?.charAt(0).toUpperCase()}
+            </div>
+            <span className="my-username">{myUsername}</span>
+          </div>
+
+          <div className="header-actions">
+             <button onClick={() => setIsDebugOpen(true)} className="action-btn debug-btn">
+               🛠 Debug
+             </button>
+             <button onClick={handleLogout} className="action-btn logout-btn">
+               Çıkış
+             </button>
           </div>
         </div>
-        <div className="user-list">
+
+        {/* Kullanıcı Listesi */}
+        <div className="users-list">
           {users.map(user => (
-            <div key={user.id} className={`user-item ${selectedUser.id === user.id ? 'active' : ''}`} onClick={() => setSelectedUser(user)}>
-              <div className={`status-dot ${user.isOnline ? 'online' : 'offline'}`}></div>
-              <span>{user.username}</span>
-            </div>
-          ))}
-        </div>
-        <div className="current-user-info">
-          <small>Oturum: <b>Baran Asar</b></small>
-        </div>
-      </div>
-
-      {/* CHAT AREA */}
-      <div className="chat-area">
-        <div className="chat-header">
-          <div className="header-info">
-            <div style={{ width: '40px', height: '40px', borderRadius: '50%', background: 'rgba(255,255,255,0.1)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--neon-green)', fontWeight: 'bold' }}>
-              {selectedUser.username.charAt(0).toUpperCase()}
-            </div>
-            <div style={{ marginLeft: '15px' }}>
-              <h3>{selectedUser.username}</h3>
-              <span className="security-badge">E2E Encrypted (AES-256)</span>
-            </div>
-          </div>
-        </div>
-
-        <div className="messages-box">
-          {messages.map((msg) => (
-            <div key={msg.id} className={`message-row ${msg.isOwn ? 'own-message' : 'other-message'}`}>
-              <div className="message-bubble">
-                <p>{msg.text}</p>
-                <span className="timestamp">{msg.timestamp}</span>
+            <div 
+              key={user.id} 
+              className={`user-item ${selectedUser?.id === user.id ? 'active' : ''}`}
+              onClick={() => setSelectedUser(user)}
+            >
+              <div className={`status-indicator ${user.is_online ? 'online' : 'offline'}`} />
+              <div className="user-info">
+                <span className="username">{user.username}</span>
+                <span className="status-text">{user.is_online ? 'Çevrimiçi' : 'Çevrimdışı'}</span>
               </div>
             </div>
           ))}
-          <div ref={messagesEndRef} />
         </div>
-
-        <form className="input-area" onSubmit={handleSend}>
-          <input type="text" placeholder="Şifreli mesaj yaz..." value={input} onChange={(e) => setInput(e.target.value)} />
-          <button type="submit">Gönder ➤</button>
-        </form>
       </div>
 
-      {/* MODALLAR */}
-      <Modal isOpen={isAddUserOpen} onClose={() => setIsAddUserOpen(false)} title="Yeni Kişi Ekle">
-        <form onSubmit={handleAddUserSubmit}>
-          <input type="text" value={newUsername} onChange={(e) => setNewUsername(e.target.value)} placeholder="Kullanıcı adı" autoFocus />
-          <button type="submit" className="login-btn" style={{ marginTop: 10 }}>Ekle</button>
-        </form>
-      </Modal>
+      {/* CHAT ALANI */}
+      <div className="chat-area">
+        {selectedUser ? (
+          <>
+            <div className="chat-header">
+              <h3>{selectedUser.username}</h3>
+              {currentSharedKey ? <span className="secure-badge">🔒 Uçtan Uca Şifreli (ECDH)</span> : <span>🔑 Anahtar Bekleniyor...</span>}
+            </div>
 
-      <Modal isOpen={isDebugOpen} onClose={() => setIsDebugOpen(false)} title="Debug (Encrypt/Decrypt)">
-        <div style={{ fontSize: 13, color: '#94a3b8' }}>
-          <p>Sunucu metni bu şekilde saklıyor (Confidentiality İspatı):</p>
-          <div style={{ wordBreak: 'break-all', background: 'rgba(255,255,255,0.06)', padding: 10, borderRadius: 10, marginTop: 10 }}>
-            <div><b>cipherText:</b> {lastEncrypted?.cipherText ?? "—"}</div>
-            <div><b>iv:</b> {lastEncrypted?.iv ?? "—"}</div>
+            <div className="messages-box">
+              {messages.map((msg, index) => (
+                <div key={index} className={`message ${msg.isMe ? 'sent' : 'received'}`}>
+                  <div className="message-content">
+                    <p>{msg.text}</p>
+                    <span className="time">{msg.timestamp ? new Date(msg.timestamp).toLocaleTimeString() : ''}</span>
+                  </div>
+                </div>
+              ))}
+              <div ref={bottomRef} />
+            </div>
+
+            <form className="message-input-area" onSubmit={handleSendMessage}>
+              <input 
+                type="text" 
+                placeholder="Şifreli mesajını yaz..." 
+                value={inputText}
+                onChange={(e) => setInputText(e.target.value)}
+              />
+              <button type="submit">Gönder ➤</button>
+            </form>
+          </>
+        ) : (
+          <div className="empty-chat">
+            <h2>Hoşgeldin, {myUsername}! 👋</h2>
+            <p>Sohbet etmek için soldan bir arkadaşını seç.</p>
           </div>
-          <button className="login-btn" style={{ marginTop: 15, width: '100%' }} onClick={handleDebugDecrypt}>Çöz (Decrypt)</button>
+        )}
+      </div>
+
+      {/* DEBUG MODAL */}
+      <Modal isOpen={isDebugOpen} onClose={() => setIsDebugOpen(false)} title="🔐 Kriptografi Debugger">
+        <div style={{ fontSize: 13, color: '#94a3b8' }}>
+          <p>Son gönderilen mesajın ağ üzerindeki (şifreli) hali:</p>
+          <div style={{ wordBreak: 'break-all', background: 'rgba(255,255,255,0.06)', padding: 10, borderRadius: 10, marginTop: 10, fontFamily: 'monospace' }}>
+            <div><b>CipherText:</b> {lastEncryptedData?.cipher.substring(0, 50) ?? "—"}...</div>
+            <div style={{marginTop: 5}}><b>IV:</b> {lastEncryptedData?.iv ?? "—"}</div>
+          </div>
+          
+          <button className="login-btn" style={{ marginTop: 15, width: '100%' }} onClick={handleDebugDecrypt}>
+             Şifreyi Çöz (Decrypt Test)
+          </button>
+          
           {debugDecryptedText && (
-            <div style={{ marginTop: 15, padding: 10, background: 'rgba(0,255,0,0.1)', color: '#fff' }}>
-              <b>Sistemden Çözülen Veri:</b> {debugDecryptedText}
+            <div style={{ marginTop: 15, padding: 10, background: 'rgba(0,255,0,0.1)', color: '#fff', borderRadius: 5 }}>
+              <b>✅ Çözülen Orijinal Metin:</b> {debugDecryptedText}
             </div>
           )}
         </div>
