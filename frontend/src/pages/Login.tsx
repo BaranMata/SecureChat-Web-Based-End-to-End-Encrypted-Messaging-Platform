@@ -33,6 +33,25 @@ const Login: React.FC = () => {
     console.clear();
 
     try {
+      // 1. ADIM (CRITICAL FIX): LocalStorage'da anahtar var mı kontrol et?
+      // Eğer yoksa, yeni bir çift oluştur ki "Decryption Failed" hatası almayalım.
+      let publicKeyBase64 = localStorage.getItem('public_key');
+      let privateKeyBase64 = localStorage.getItem('private_key');
+
+      if (!publicKeyBase64 || !privateKeyBase64) {
+        console.log("⚠️ Cihazda anahtar bulunamadı. Yeni anahtar çifti oluşturuluyor...");
+        const keyPair = await generateKeyPair();
+        publicKeyBase64 = await exportPublicKey(keyPair.publicKey);
+        privateKeyBase64 = await exportPrivateKey(keyPair.privateKey);
+
+        // Anahtarları sakla
+        localStorage.setItem('public_key', publicKeyBase64);
+        localStorage.setItem('private_key', privateKeyBase64);
+      } else {
+        console.log("✅ Mevcut şifreleme anahtarları bulundu.");
+      }
+
+      // 2. ADIM: Backend'e Login İsteği At
       const response = await fetch('http://localhost:3000/api/auth/login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -49,7 +68,7 @@ const Login: React.FC = () => {
 
       // Token ve Kullanıcı bilgilerini sakla
       localStorage.setItem('token', data.token);
-      localStorage.setItem('user_id', data.user.id); // UUID
+      localStorage.setItem('user_id', data.user.id);
       localStorage.setItem('username', data.user.username);
 
       // Chat sayfasına yönlendir
@@ -105,9 +124,8 @@ const Login: React.FC = () => {
 
       console.log("💾 Kayıt Başarılı:", data);
 
-      // 4. Private Key'i Kullanıcının Cihazına Kaydet (Çok Önemli!)
-      // Not: Gerçek bir uygulamada bu IndexedDB'de şifreli saklanmalıdır.
-      // MVP için localStorage kullanıyoruz.
+      // 4. Anahtarları Cihaza Kaydet (Login olmadan önce hazır olsun)
+      localStorage.setItem('public_key', publicKeyBase64);
       localStorage.setItem('private_key', privateKeyBase64);
       
       alert("✅ Kayıt başarılı! Lütfen giriş yapınız.");
@@ -161,9 +179,8 @@ const Login: React.FC = () => {
 
           <div className="auth-actions">
             <button type="submit" className="login-btn" disabled={loading}>
-              {loading ? 'Bağlanıyor...' : 'Giriş Yap'}
+              {loading ? 'Kontrol Ediliyor...' : 'Giriş Yap'}
             </button>
-            
           </div>
         </form>
 

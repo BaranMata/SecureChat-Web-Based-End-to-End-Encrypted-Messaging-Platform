@@ -35,6 +35,7 @@ const Chat: React.FC = () => {
   const navigate = useNavigate();
   const socketRef = useRef<Socket | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
+  const messagesBoxRef = useRef<HTMLDivElement | null>(null);
 
   // --- STATE ---
   const [users, setUsers] = useState<User[]>([]);
@@ -61,6 +62,8 @@ const Chat: React.FC = () => {
 
     socketRef.current = io(SERVER_URL);
     socketRef.current.emit('register_user', myUserId);
+    
+    // Veritabanındaki herkesi getir (Otomatik Liste)
     fetchUsers();
 
     socketRef.current.on('user_status', (data) => {
@@ -117,11 +120,13 @@ const Chat: React.FC = () => {
       const data = await res.json();
       
       const decryptedMessages = await Promise.all(data.map(async (msg: any) => {
+        const isMe = String(msg.sender_id) === String(myUserId);
+
         try {
           const decryptedText = await decryptMessage(msg.cipher_text, msg.iv, sharedKey);
-          return { ...msg, text: decryptedText, isMe: msg.sender_id === myUserId };
+          return { ...msg, text: decryptedText, isMe: isMe };
         } catch (e) {
-          return { ...msg, text: "⚠️ Mesaj çözülemedi", isMe: msg.sender_id === myUserId };
+          return { ...msg, text: "⚠️ Mesaj çözülemedi", isMe: isMe };
         }
       }));
 
@@ -192,23 +197,33 @@ const Chat: React.FC = () => {
     try {
       const res = await fetch(`${SERVER_URL}/api/users`);
       const data = await res.json();
+      // Kendimiz hariç herkesi listeye ekle
       setUsers(data.filter((u: User) => u.id !== myUserId));
     } catch (error) { console.error("User fetch hatası"); }
   };
 
   const scrollToBottom = () => {
-    setTimeout(() => bottomRef.current?.scrollIntoView({ behavior: "smooth" }), 100);
+    setTimeout(() => {
+      if (messagesBoxRef.current) {
+        messagesBoxRef.current.scrollTo({ top: messagesBoxRef.current.scrollHeight, behavior: 'smooth' });
+      } else {
+        bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+      }
+    }, 100);
   };
 
   const handleLogout = () => {
-    localStorage.clear();
+    localStorage.removeItem('token');
+    localStorage.removeItem('user_id');
+    localStorage.removeItem('username');
+    
     socketRef.current?.disconnect();
     navigate('/');
   };
 
   return (
     <div className="chat-container">
-      {/* SIDEBAR - YENİ TASARIM */}
+      {/* SIDEBAR */}
       <div className="sidebar">
         
         {/* Başlık ve Profil Kartı */}
@@ -235,7 +250,7 @@ const Chat: React.FC = () => {
           </div>
         </div>
 
-        {/* Kullanıcı Listesi */}
+        {/* Kullanıcı Listesi (Herkes burada görünür) */}
         <div className="users-list">
           {users.map(user => (
             <div 
@@ -262,7 +277,7 @@ const Chat: React.FC = () => {
               {currentSharedKey ? <span className="secure-badge">🔒 Uçtan Uca Şifreli (ECDH)</span> : <span>🔑 Anahtar Bekleniyor...</span>}
             </div>
 
-            <div className="messages-box">
+            <div className="messages-box" ref={messagesBoxRef}>
               {messages.map((msg, index) => (
                 <div key={index} className={`message ${msg.isMe ? 'sent' : 'received'}`}>
                   <div className="message-content">
@@ -287,7 +302,7 @@ const Chat: React.FC = () => {
         ) : (
           <div className="empty-chat">
             <h2>Hoşgeldin, {myUsername}! 👋</h2>
-            <p>Sohbet etmek için soldan bir arkadaşını seç.</p>
+            <p>Soldaki listeden birini seç ve mesajlaşmaya başla.</p>
           </div>
         )}
       </div>
